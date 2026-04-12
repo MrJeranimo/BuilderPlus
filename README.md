@@ -1,31 +1,53 @@
-# BuilderPlus (WIP)
-
+# BuilderPlus v0.3.0 (WIP)
 ⚠️ **Work in Progress** — This mod is under active development. Expect bugs and missing features.
 
 Replaces the vehicle editor UI in Kitten Space Agency with a KSP2-style interface.
 
 ## Features
-- Parts catalogue with category sidebar and search
-- Vertical toolbar (translate, rotate, scale, snap, connect, symmetry)
-- Stage panel with hover highlight
-- Sequence panel
-- Launch panel with body/location selection
+
+### UI
+- Parts catalogue with category sidebar (Font Awesome icons) and search bar
+- Vertical toolbar with icons (translate, rotate, scale, snap, connect, radial symmetry, stages, symmetry)
+- Sequence panel with category icons per part
+- Launch panel with body/location selection (locations filter by selected body)
+- Rounded corners and dark theme throughout
+- Removed "Simulation Paused" alert in VAB
+
+### Parts & Building
+- Vertical rocket orientation — parts spawn upright like KSP
 - Click-to-grab parts (no need to hold click)
+- Camera auto-centers on first part placement and when moving root part
 - Delete parts by clicking the catalogue while holding a part
-- Save and load vehicles (option to delete saved vehicles)
-- Undo and redo key bindings and buttons
-- Removed "Simulation Paused" alert on VAB
-- Visual - Rounded the corners of elements to make it more visually pleasing
+- Save and load vehicles with delete option
+
+### Keyboard Shortcuts
+| Key     | Action |
+|---------|--------|
+| Delete  | Remove selected part |
+| R       | Toggle radial symmetry |
+| X       | Cycle symmetry (next) |
+| Shift+X | Cycle symmetry (previous) |
+| C       | Toggle angle snap |
+| V       | Toggle connect |
+| W/S     | Rotate part forward/back |
+| A/D     | Rotate part left/right (flat) |
+| Q/E     | Rotate part left/right |
+| Shift+(W/A/S/D/Q/E) | Rotate part 45° instead of 15° |
+| Ctrl+Z  | Undo |
+| Ctrl+Y  | Redo |
+| Scroll  | Pan camera up/down |
+| Shift+Scroll | Zoom in/out |
+
+### Gizmos
+- Shift+Scale Gizmo scales uniformly on all axes
+- Undo/Redo buttons in toolbar
+
+## Known Limitations
+- Part rotation shortcuts (W/A/S/D/Q/E) don't work correctly when Snap mode is active
 
 ## Planned
-- Right-click to move parts between stages
-- Sequence panel icons
 - Visual polish
-- Middle Mouse to Pan around editor
-- Modifier (like shift) for the Scale Gizmo to scale in multiple dimensions
-- Delete key to remove parts
-- SVG better Icons for categories (Currently Font Awesome is being used, please install it in your system as I think is needed)
-- Drag and drop to arrenge stages
+- Drag and drop to arrange stages
 
 ## Dependencies
 - [StarMap Mod Loader](https://github.com/StarMapLoader/StarMap) >= 0.4.5

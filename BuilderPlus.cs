@@ -16,16 +16,13 @@ public class BuilderPlusMod
     [StarMapImmediateLoad]
     public void OnLoad(KSA.Mod mod)
     {
-        Console.WriteLine("[BuilderPlus] Cargando mod...");
         _harmony.PatchAll();
-        Console.WriteLine("[BuilderPlus] Patches aplicados!");
     }
 
     [StarMapUnload]
     public void OnUnload()
     {
         _harmony.UnpatchAll("com.builderplus.mod");
-        Console.WriteLine("[BuilderPlus] Mod descargado.");
     }
 }
 
@@ -67,6 +64,36 @@ public class HideAlertsInEditor
     }
 }
 
+[HarmonyPatch(typeof(VehicleEditor), nameof(VehicleEditor.Dispose))]
+public class UnrotateOnLaunch
+{
+    static void Prefix(VehicleEditor __instance)
+    {
+        if (__instance.LaunchNewVehicle && __instance.EditingSpace.Parts != null)
+        {
+            var root = __instance.EditingSpace.Parts.Root;
+            if (root == null) return;
+            
+            var inverseRotation = doubleQuat.CreateFromAxisAngle(new double3(0, 1, 0), -Math.PI / 2.0);
+            
+            root.Asmb2ParentAsmb = doubleQuat.Multiply(inverseRotation, root.Asmb2ParentAsmb);
+            
+            var children = new PartTreeChildrenIterator(root);
+            while (true)
+            {
+                Part? next = children.GetNextNode();
+                if (next == null) break;
+                next.Asmb2ParentAsmb = doubleQuat.Multiply(inverseRotation, next.Asmb2ParentAsmb);
+                double3 relative = next.PositionParentAsmb - root.PositionParentAsmb;
+                next.PositionParentAsmb = root.PositionParentAsmb + relative.Transform(inverseRotation);
+                next.PositionParentAsmbSafe = next.PositionParentAsmb;
+            }
+            root.Asmb2ParentAsmbSafe = root.Asmb2ParentAsmb;
+            __instance.EditingSpace.Parts.RecomputeAllDerivedData();
+        }
+    }
+}
+
 [HarmonyPatch(typeof(SequenceList), nameof(SequenceList.DrawEditorSequenceWindow))]
 public class HideOriginalSequenceWindow
 {
@@ -87,17 +114,19 @@ public class LoadIconFont
             fixed (ushort* rangesPtr = ranges)
             {
                 ImFontConfig config = new ImFontConfig();
-                config.MergeMode = true;
+                config.MergeMode = false; // Fuente separada
                 config.SizePixels = GameSettings.GetFontSize();
                 config.GlyphMaxAdvanceX = float.MaxValue;
                 config.RasterizerMultiply = 1f;
                 config.RasterizerDensity = (float)GameSettings.GetFontDensity() / 100f;
                 
-                fonts.AddFontFromFileTTF(
+                var fontPtr = fonts.AddFontFromFileTTF(
                     "Content/BuilderPlus/fa-solid-900.ttf",
                     GameSettings.GetFontSize(),
                     &config,
                     new ReadOnlySpan<ushort>(rangesPtr, 3));
+                    
+                FontManager.Fonts["fa-solid-900"] = fontPtr;
             }
             
             Console.WriteLine("[BuilderPlus] Icon font loaded!");
@@ -106,6 +135,32 @@ public class LoadIconFont
         {
             Console.WriteLine($"[BuilderPlus] Error loading icon font: {e.Message}");
         }
+    }
+}
+
+[HarmonyPatch(typeof(VehicleEditor), nameof(VehicleEditor.UpdateSelected))]
+public class UniformScalePatch
+{
+    static void Postfix(VehicleEditor __instance)
+    {
+        if (!Program.ShiftDown) return;
+        if (__instance.Selected == null) return;
+        if (__instance.HighlightedGizmo != __instance.ScaleGizmo) return;
+        if (!__instance.GizmoGrabbed) return;
+
+        // Aplicamos la escala del eje activo a los otros dos ejes también
+        double3 scale = __instance.Selected.Scale;
+        int idx = __instance.HighlightedGizmoSegmentIndex;
+        
+        double value = idx switch
+        {
+            0 => scale.X,
+            1 => scale.Y,
+            2 => scale.Z,
+            _ => 1.0
+        };
+        
+        __instance.Selected.Scale = new double3(value, value, value);
     }
 }
 
@@ -118,10 +173,11 @@ public class StickyGrabPatch
     public static bool IsStickyGrabbing => _stickyGrab;
     public static bool IsSpawning = false;
 
-    public static void MarkSpawned()
+    public static void MarkSpawned(bool isFirst = false)
     {
         _spawnSkips = 1;
         IsSpawning = true;
+        _isFirstPart = isFirst;
     }
     
     public static void CancelStickyGrab()
@@ -131,7 +187,9 @@ public class StickyGrabPatch
         GrabbedPart = null;
         IsSpawning = false;
     }
-    
+
+    static bool _isFirstPart = false;
+
     static void Postfix(VehicleEditor __instance, GlfwMouseButton button, GlfwButtonAction action)
     {
         if (button != GlfwMouseButton.Number1) return;
@@ -143,7 +201,19 @@ public class StickyGrabPatch
             {
                 _spawnSkips--;
                 if (_spawnSkips == 0)
+                {
                     IsSpawning = false;
+                    
+                    Console.WriteLine($"[BP] spawnSkips=0, isFirstPart={_isFirstPart}");
+                    
+                    if (_isFirstPart && Program.Editor?.EditingSpace.Parts?.Root != null)
+                    {
+                        var root = Program.Editor.EditingSpace.Parts.Root;
+                        Program.Editor.CameraOffset = root.PositionParentAsmb.Transform(Program.Editor.EditingSpace.Asmb2Ecl);
+                        _isFirstPart = false;
+                        Console.WriteLine("[BP] Camera centered from spawn!");
+                    }
+                }
                 return;
             }
             
@@ -167,8 +237,48 @@ public class StickyGrabPatch
                     _stickyGrab = false;
                     GrabbedPart = null;
                     VehicleEditorUIPatch.MarkSnapshotNeeded();
+                    
+                    if (Program.Editor?.EditingSpace.Parts?.Root != null)
+                    {
+                        var root = Program.Editor.EditingSpace.Parts.Root;
+                        bool isRoot = GrabbedPart == root || __instance.Selected == root;
+                        
+                        if (_isFirstPart || isRoot)
+                        {
+                            Program.Editor.CameraOffset = root.PositionParentAsmb.Transform(Program.Editor.EditingSpace.Asmb2Ecl);
+                            _isFirstPart = false;
+                        }
+                    }
                 }
             }
+        }
+    }
+}
+
+[HarmonyPatch(typeof(Program), nameof(Program.OnScroll))]
+public class ProgramScrollPatch
+{
+    static bool Prefix(Program __instance, GlfwWindow window, double2 offset)
+    {
+        if (Program.Editor == null) return true;
+        if (ImGui.GetIO().WantCaptureMouse) return true;
+        
+        bool shift = Program.ShiftDown;
+        var editor = Program.Editor;
+        
+        if (shift)
+        {
+            editor.EditingSpace.OrbitView.DistancePower -= offset.Y * 2.0;
+            editor.EditingSpace.OrbitView.DistancePower = Math.Max(1.0, editor.EditingSpace.OrbitView.DistancePower);
+            return false;
+        }
+        else
+        {
+            var camera = Program.MainViewport.GetCamera();
+            // Obtenemos el up vector en coordenadas ECL desde la rotación de la cámara
+            double3 upEcl = double3.UnitY.Transform(camera.WorldRotation);
+            editor.CameraOffset += upEcl * offset.Y * editor.EditingSpace.OrbitView.DistancePower * 0.05;
+            return false;
         }
     }
 }
@@ -213,6 +323,11 @@ public class VehicleEditorUIPatch
         { "Tanks",       "\uf575" },
     };
 
+    public static void ResetFlags()
+    {
+        _initialized = false;
+    }
+
     static bool Prefix(VehicleEditor __instance, Viewport inViewport)
     {
         if (!_initialized)
@@ -238,6 +353,136 @@ public class VehicleEditorUIPatch
                 Redo(__instance);
                 return false;
             }
+
+           var partToRotate = StickyGrabPatch.GrabbedPart;
+
+            if (partToRotate == null && __instance.Highlighted != null)
+            {
+                var h = __instance.Highlighted;
+                bool isDetached = h.FakeTranslucent 
+                    || __instance.UnattachedPartTrees.Contains(h.Tree)
+                    || (h.Grabbed && __instance.EditingSpace.Parts != h.Tree)
+                    || StickyGrabPatch.IsSpawning;
+                
+                if (isDetached)
+                    partToRotate = h;
+            }
+
+            if (partToRotate != null)
+            {
+                double angle = Math.PI / 12.0;
+                if (shift) angle = Math.PI / 4.0;
+                
+                double3 rotAxis = new double3(0, 0, 0);
+
+                if (ImGui.IsKeyPressed(ImGuiKey.S))
+                    rotAxis = new double3(1, 0, 0);
+                else if (ImGui.IsKeyPressed(ImGuiKey.W))
+                    rotAxis = new double3(-1, 0, 0);
+                else if (ImGui.IsKeyPressed(ImGuiKey.A))
+                    rotAxis = new double3(0, 0, 1);
+                else if (ImGui.IsKeyPressed(ImGuiKey.D))
+                    rotAxis = new double3(0, 0, -1);
+                else if (ImGui.IsKeyPressed(ImGuiKey.Q))
+                    rotAxis = new double3(0, 1, 0);
+                else if (ImGui.IsKeyPressed(ImGuiKey.E))
+                    rotAxis = new double3(0, -1, 0);
+
+                if (rotAxis.LengthSquared() > 0)
+                {
+                    var root = partToRotate;
+                    var localRot = doubleQuat.CreateFromAxisAngle(rotAxis, angle);
+                    
+                    root.Asmb2ParentAsmbSafe = doubleQuat.Multiply(localRot, root.Asmb2ParentAsmbSafe);
+                    root.Asmb2ParentAsmb = root.Asmb2ParentAsmbSafe;
+                    
+                    var children = new PartTreeChildrenIterator(root);
+                    while (true)
+                    {
+                        Part? next = children.GetNextNode();
+                        if (next == null) break;
+                        next.Asmb2ParentAsmbSafe = doubleQuat.Multiply(localRot, next.Asmb2ParentAsmbSafe);
+                        next.Asmb2ParentAsmb = next.Asmb2ParentAsmbSafe;
+                        double3 relative = next.PositionParentAsmb - root.PositionParentAsmb;
+                        next.PositionParentAsmb = root.PositionParentAsmb + relative.Transform(localRot);
+                        next.PositionParentAsmbSafe = next.PositionParentAsmb;
+                    }
+                }
+            }
+
+            // Delete selected part
+            if (ImGui.IsKeyPressed(ImGuiKey.Delete) && !io.WantCaptureKeyboard)
+            {
+                if (__instance.Selected != null)
+                {
+                    TakeSnapshot(__instance);
+                    var delPart = __instance.Selected;
+                    var delTree = delPart.Tree;
+                    
+                    // Solo borramos si es un árbol desconectado o la parte es el root
+                    if (__instance.UnattachedPartTrees.Contains(delTree) || delPart == delTree.Root)
+                    {
+                        var delParts = delTree.Parts;
+                        for (int d = delParts.Length - 1; d >= 0; d--)
+                        {
+                            delParts[d].Grabbed = false;
+                            delParts[d].Selected = false;
+                            delParts[d].Highlighted = false;
+                            delParts[d].FakeTranslucent = false;
+                            try { delParts[d].Disconnect(); } catch { }
+                        }
+                        if (__instance.EditingSpace.Parts == delTree)
+                            __instance.EditingSpace.Parts = null;
+                        __instance.UnattachedPartTrees.Remove(delTree);
+                    }
+                    else
+                    {
+                        // Si es una parte conectada al cohete, la desconectamos del parent
+                        delPart.Disconnect();
+                        __instance.UnattachedPartTrees.Add(delPart.Tree);
+                        var orphanParts = delPart.Tree.Parts;
+                        for (int d = 0; d < orphanParts.Length; d++)
+                        {
+                            orphanParts[d].Grabbed = false;
+                            orphanParts[d].Selected = false;
+                            orphanParts[d].Highlighted = false;
+                            orphanParts[d].FakeTranslucent = false;
+                            try { orphanParts[d].Disconnect(); } catch { }
+                        }
+                        __instance.UnattachedPartTrees.Remove(delPart.Tree);
+                    }
+                    
+                    __instance.Selected = null;
+                    __instance.Highlighted = null;
+                    __instance.PartMenus.Clear();
+                    StickyGrabPatch.CancelStickyGrab();
+                    MarkSnapshotNeeded();
+                    return false;
+                }
+            }
+
+            // Toggle Symmetry (R)
+            if (ImGui.IsKeyPressed(ImGuiKey.R))
+                __instance.RadialSymmetry = !__instance.RadialSymmetry;
+
+            // Cycle symmetry next (X)
+            if (ImGui.IsKeyPressed(ImGuiKey.X) && !shift)
+                __instance.SymmetryIndex = (__instance.SymmetryIndex + 1) % __instance.Symmetries.Length;
+
+            // Cycle symmetry prev (Shift+X)
+            if (ImGui.IsKeyPressed(ImGuiKey.X) && shift)
+                __instance.SymmetryIndex = __instance.SymmetryIndex == 0
+                    ? __instance.Symmetries.Length - 1
+                    : __instance.SymmetryIndex - 1;
+
+            // Toggle Angle Snap (C)
+            if (ImGui.IsKeyPressed(ImGuiKey.C))
+                __instance.Snapping = !__instance.Snapping;
+
+            // Toggle Connect (V)
+            if (ImGui.IsKeyPressed(ImGuiKey.V))
+                __instance.Connecting = !__instance.Connecting;
+
         }
 
         // Take snapshot when no parts are grabbed
@@ -522,7 +767,11 @@ public class VehicleEditorUIPatch
         List<EditorTag> tags = tagsField?.GetValue(null) as List<EditorTag> ?? new List<EditorTag>();
 
         if (_iconFont.IsNull())
+        {
             FontManager.Fonts.TryGetValue("fa-solid-900", out _iconFont);
+            if (_iconFont.IsNull())
+                Console.WriteLine("[BuilderPlus] Warning: icon font not found!");
+        }
 
         bool hasIconFont = !_iconFont.IsNull();
 
@@ -657,9 +906,31 @@ public class VehicleEditorUIPatch
                             editor.PartMenus.Clear();
                             StickyGrabPatch.CancelStickyGrab();
                         }
-                        
-                        StickyGrabPatch.MarkSpawned();
+
+                        bool wasEmpty = editor.EditingSpace.Parts == null;
+                        StickyGrabPatch.MarkSpawned(wasEmpty);
                         editor.SpawnPart(part, in matrixAsmb2Ego, viewport);
+
+                        if (editor.Highlighted != null)
+                        {
+                            var rotation = doubleQuat.CreateFromAxisAngle(new double3(0, 1, 0), Math.PI / 2.0);
+                            var root = editor.Highlighted;
+                            var treeParts = root.Tree.Parts;
+                            
+                            for (int r = 0; r < treeParts.Length; r++)
+                            {
+                                var p = treeParts[r];
+                                p.Asmb2ParentAsmb = doubleQuat.Multiply(rotation, p.Asmb2ParentAsmb);
+                                p.Asmb2ParentAsmbSafe = p.Asmb2ParentAsmb;
+                                if (p != root)
+                                {
+                                    double3 relative = p.PositionParentAsmb - root.PositionParentAsmb;
+                                    p.PositionParentAsmb = root.PositionParentAsmb + relative.Transform(rotation);
+                                    p.PositionParentAsmbSafe = p.PositionParentAsmb;
+                                }
+                            }
+                        }
+
                     }
                    if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
                     {
@@ -901,7 +1172,6 @@ public class VehicleEditorUIPatch
                         foreach (Part p in stageParts)
                             p.HighlightedForStage = newState;
                     }
-
                     ImGui.PopStyleColor(3);
                     ImGui.Dummy(new float2(0f, 2f));
 
@@ -931,7 +1201,6 @@ public class VehicleEditorUIPatch
                             part.Highlighted = false;
                         }
 
-                        // Right-click popup to move parts between stages
                         if (ImGui.BeginPopupContextItem("##moveStage_" + part.InstanceId))
                         {
                             ImGui.Text("Move to stage:");
@@ -958,7 +1227,6 @@ public class VehicleEditorUIPatch
                 }
             }
 
-            // Add Stage button
             ImGui.Dummy(new float2(0f, 4f));
             ImGui.PushStyleColor(ImGuiCol.Button,        ACCENT_BLUE);
             ImGui.PushStyleColor(ImGuiCol.ButtonHovered, ACCENT_HOVER);
@@ -1047,6 +1315,35 @@ public class VehicleEditorUIPatch
                             p.HighlightedForSequence = newState;
                     }
                     ImGui.PopStyleColor(3);
+
+                    // Right-click context menu
+                    if (ImGui.BeginPopupContextItem("##seqctx_" + number))
+                    {
+                        ImGui.PushStyleColor(ImGuiCol.Text, HEADER_COLOR);
+                        ImGui.Text($"Move Seq {number:D2} to:");
+                        ImGui.PopStyleColor();
+                        ImGui.Separator();
+                        
+                        for (int s = 0; s < seqList.Count; s++)
+                        {
+                            int otherNum = seqList[s].Number;
+                            if (otherNum == number) continue;
+                            if (ImGui.Selectable($"Sequence {otherNum:D2}", false, ImGuiSelectableFlags.None, null))
+                            {
+                                var allParts2 = editor.EditingSpace.AllParts;
+                                for (int k = 0; k < allParts2.Length; k++)
+                                {
+                                    if (allParts2[k].Sequence == number)
+                                        allParts2[k].SetSequence(otherNum);
+                                    else if (allParts2[k].Sequence == otherNum)
+                                        allParts2[k].SetSequence(number);
+                                }
+                                editor.EditingSpace.Parts.RecomputeAllDerivedData();
+                            }
+                        }
+                        ImGui.EndPopup();
+                    }
+
                     ImGui.Dummy(new float2(0f, 2f));
                     
                     foreach (Part part in seqParts)
