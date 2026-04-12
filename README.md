@@ -1,4 +1,4 @@
-# BetterBuilder (WIP)
+# BuilderPlus (WIP)
 
 ⚠️ **Work in Progress** — This mod is under active development. Expect bugs and missing features.
 
@@ -31,11 +31,11 @@ Replaces the vehicle editor UI in Kitten Space Agency with a KSP2-style interfac
 - [StarMap Mod Loader](https://github.com/StarMapLoader/StarMap) >= 0.4.5
 
 ## Installation
-1. Copy the `BetterBuilder` folder to `KSA/Content/`
+1. Copy the `BuilderPlus` folder to `KSA/Content/`
 2. Add to `manifest.toml`:
 ```toml
 [[mods]]
-id = "BetterBuilder"
+id = "BuilderPlus"
 enabled = true
 ```
 3. Launch via StarMap
