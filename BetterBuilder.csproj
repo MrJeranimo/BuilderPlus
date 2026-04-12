@@ -63,5 +63,17 @@
     <HintPath>D:\Games\Kitten Space Agency\Brutal.Glfw.dll</HintPath>
     <Private>false</Private>
   </Reference>
+  <Reference Include="Planet.Render.Core">
+    <HintPath>D:\Games\Kitten Space Agency\Planet.Render.Core.dll</HintPath>
+    <Private>false</Private>
+  </Reference>
+  <Reference Include="Brutal.Ktx">
+    <HintPath>D:\Games\Kitten Space Agency\Brutal.Ktx.dll</HintPath>
+    <Private>false</Private>
+  </Reference>
+  <Reference Include="Brutal.Texture">
+    <HintPath>D:\Games\Kitten Space Agency\Brutal.Texture.dll</HintPath>
+    <Private>false</Private>
+  </Reference>
   </ItemGroup>
 </Project>

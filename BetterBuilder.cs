@@ -58,6 +58,15 @@ public class HideOriginalStageWindow
     static bool Prefix() => false;
 }
 
+[HarmonyPatch(typeof(Universe), nameof(Universe.DrawAlerts))]
+public class HideAlertsInEditor
+{
+    static bool Prefix()
+    {
+        return Program.Editor == null;
+    }
+}
+
 [HarmonyPatch(typeof(SequenceList), nameof(SequenceList.DrawEditorSequenceWindow))]
 public class HideOriginalSequenceWindow
 {
@@ -73,13 +82,12 @@ public class LoadIconFont
         {
             ImFontAtlasPtr fonts = ImGui.GetIO().Fonts;
             
-            // Glyph ranges de Font Awesome 6 Solid
             ushort[] ranges = new ushort[] { 0xe000, 0xf8ff, 0 };
             
             fixed (ushort* rangesPtr = ranges)
             {
                 ImFontConfig config = new ImFontConfig();
-                config.MergeMode = true; // Merge con la fuente principal
+                config.MergeMode = true;
                 config.SizePixels = GameSettings.GetFontSize();
                 config.GlyphMaxAdvanceX = float.MaxValue;
                 config.RasterizerMultiply = 1f;
@@ -109,6 +117,7 @@ public class StickyGrabPatch
     public static Part? GrabbedPart = null;
     public static bool IsStickyGrabbing => _stickyGrab;
     public static bool IsSpawning = false;
+
     public static void MarkSpawned()
     {
         _spawnSkips = 1;
@@ -126,7 +135,7 @@ public class StickyGrabPatch
     static void Postfix(VehicleEditor __instance, GlfwMouseButton button, GlfwButtonAction action)
     {
         if (button != GlfwMouseButton.Number1) return;
-        if (ImGui.GetIO().WantCaptureMouse) return; // Ignorar clicks en UI
+        if (ImGui.GetIO().WantCaptureMouse) return;
         
         if (action == GlfwButtonAction.Release)
         {
@@ -141,38 +150,40 @@ public class StickyGrabPatch
             if (__instance.Highlighted != null)
             {
                 if (!_stickyGrab)
-            {
-                _stickyGrab = true;
-                GrabbedPart = __instance.Highlighted;
-                __instance.Highlighted.Grabbed = true;
-                var children = new PartTreeChildrenIterator(__instance.Highlighted);
-                while (true)
                 {
-                    var next = children.GetNextNode();
-                    if (next == null) break;
-                    next.Grabbed = true;
+                    _stickyGrab = true;
+                    GrabbedPart = __instance.Highlighted;
+                    __instance.Highlighted.Grabbed = true;
+                    var children = new PartTreeChildrenIterator(__instance.Highlighted);
+                    while (true)
+                    {
+                        var next = children.GetNextNode();
+                        if (next == null) break;
+                        next.Grabbed = true;
+                    }
                 }
-            }
-            else
-            {
-                _stickyGrab = false;
-                GrabbedPart = null;
-            }
+                else
+                {
+                    _stickyGrab = false;
+                    GrabbedPart = null;
+                    VehicleEditorUIPatch.MarkSnapshotNeeded();
+                }
             }
         }
     }
 }
 
-// Cancela la ventana original del editor y la reemplaza con la nuestra
 [HarmonyPatch(typeof(VehicleEditor), nameof(VehicleEditor.OnDrawUi))]
 public class VehicleEditorUIPatch
 {
     static EditorTag _selectedTag = EditorTag.All;
     static string _searchText = "";
-
     static bool _showStages = false;
-
     static ImFontPtr _iconFont = default;
+    static bool _initialized = false;
+    static bool _showSavePopup = false;
+    static bool _showLoadPanel = false;
+    static string _saveName = "";
     
     static readonly float4 BG_DARK      = new float4(0.10f, 0.10f, 0.12f, 1.00f);
     static readonly float4 BG_MID       = new float4(0.15f, 0.15f, 0.18f, 1.00f);
@@ -181,27 +192,27 @@ public class VehicleEditorUIPatch
     static readonly float4 TEXT_DIM     = new float4(0.60f, 0.60f, 0.65f, 1.00f);
     static readonly float4 HEADER_COLOR = new float4(0.30f, 0.70f, 1.00f, 1.00f);
     static readonly float4 ACTIVE_COLOR = new float4(0.20f, 0.50f, 0.90f, 1.00f);
-    static bool _initialized = false;
-
-   static readonly Dictionary<string, string> CategoryIcons = new()
+    static List<PartInstance> _undoStack = new List<PartInstance>();
+    static List<PartInstance> _redoStack = new List<PartInstance>();
+    static bool _snapshotPending = true;
+    static readonly Dictionary<string, string> CategoryIcons = new()
     {
-        { "All",         "\uf005" }, // star
-        { "Capsules",    "\uf508" }, // user-astronaut
-        { "Cargo",       "\uf466" }, // box-open
-        { "Coupling",    "\uf0c1" }, // link
-        { "Electrical",  "\uf0e7" }, // bolt
-        { "Engines",     "\uf135" }, // rocket
-        { "Fuel Tanks",  "\uf52f" }, // gas-pump
-        { "Interstage",  "\uf248" }, // layer-group
-        { "Lights",      "\uf0eb" }, // lightbulb
-        { "Passage",     "\uf52b" }, // door-open
-        { "RCS",         "\uf192" }, // circle-dot
-        { "Radial",      "\uf110" }, // circle-notch
-        { "Structural",  "\uf6e3" }, // your pick
-        { "Tanks",       "\uf575" }, // your pick
+        { "All",         "\uf005" },
+        { "Capsules",    "\uf508" },
+        { "Cargo",       "\uf466" },
+        { "Coupling",    "\uf0c1" },
+        { "Electrical",  "\uf0e7" },
+        { "Engines",     "\uf135" },
+        { "Fuel Tanks",  "\uf52f" },
+        { "Interstage",  "\uf248" },
+        { "Lights",      "\uf0eb" },
+        { "Passage",     "\uf52b" },
+        { "RCS",         "\uf192" },
+        { "Radial",      "\uf110" },
+        { "Structural",  "\uf6e3" },
+        { "Tanks",       "\uf575" },
     };
 
-    // Prefix cancela el OnDrawUi original
     static bool Prefix(VehicleEditor __instance, Viewport inViewport)
     {
         if (!_initialized)
@@ -209,16 +220,46 @@ public class VehicleEditorUIPatch
             __instance.Connecting = true;
             _initialized = true;
         }
+
+        // Keyboard shortcuts
+        var io = ImGui.GetIO();
+        if (!io.WantCaptureKeyboard)
+        {
+            bool ctrl = ImGui.IsKeyDown(ImGuiKey.LeftCtrl) || ImGui.IsKeyDown(ImGuiKey.RightCtrl);
+            bool shift = ImGui.IsKeyDown(ImGuiKey.LeftShift) || ImGui.IsKeyDown(ImGuiKey.RightShift);
+            
+            if (ctrl && ImGui.IsKeyPressed(ImGuiKey.Z) && !shift)
+            {
+                Undo(__instance);
+                return false;
+            }
+            if (ctrl && (ImGui.IsKeyPressed(ImGuiKey.Y) || (ImGui.IsKeyPressed(ImGuiKey.Z) && shift)))
+            {
+                Redo(__instance);
+                return false;
+            }
+        }
+
+        // Take snapshot when no parts are grabbed
+        if (_snapshotPending && __instance.EditingSpace.Parts != null)
+        {
+            bool anyGrabbed = false;
+            var allParts = __instance.EditingSpace.AllParts;
+            for (int i = 0; i < allParts.Length; i++)
+            {
+                if (allParts[i].Grabbed) { anyGrabbed = true; break; }
+            }
+            if (!anyGrabbed)
+                TakeSnapshot(__instance);
+        }
             
         try
         {
             double4x4 matrixVehicleAsmb2Ego = __instance.EditingSpace.GetMatrixAsmb2Ego(inViewport.GetCamera());
 
-            // Dibujamos nuestra UI
             DrawPartsPanel(__instance, inViewport);
             DrawToolbar(__instance, inViewport);
 
-            // Conservamos las ventanas importantes del juego
             for (int i = __instance.PartMenus.Count - 1; i >= 0; i--)
                 __instance.DrawPartUi(i, inViewport);
 
@@ -233,40 +274,18 @@ public class VehicleEditorUIPatch
 
             if (__instance.ExistingVehicle == null)
                 DrawLaunchPanel(__instance, inViewport);
+
+            if (_showSavePopup)
+                DrawSavePopup(__instance);
+            if (_showLoadPanel)
+                DrawLoadPanel(__instance, inViewport);
         }
         catch (Exception e)
         {
             Console.WriteLine($"[BetterBuilder] Error en Prefix: {e.Message}");
         }
 
-        // Sticky grab: si clickeamos una parte colocada, hacerla "pegajosa"
-        if (ImGui.IsMouseClicked(ImGuiMouseButton.Left) 
-            && !ImGui.GetIO().WantCaptureMouse
-            && __instance.Highlighted != null 
-            && !__instance.Highlighted.FakeTranslucent
-            && !__instance.GizmoGrabbed)
-        {
-            var part = __instance.Highlighted;
-            
-            // Desconectar y hacer translúcida
-            if (part.Disconnect())
-            {
-                __instance.UnattachedPartTrees.Add(part.Tree);
-                var treeParts = part.Tree.Parts;
-                for (int i = 0; i < treeParts.Length; i++)
-                    treeParts[i].FakeTranslucent = true;
-            }
-            
-            part.Grabbed = true;
-            part.Selected = true;
-            __instance.Selected = part;
-            
-            // Simular soltar el mouse para que quede "pegada"
-            ImGui.Internal.FocusWindow(null);
-            ImGui.GetIO().AddMouseButtonEvent(0, false);
-        }
-
-        return false; // Cancela el método original
+        return false;
     }
 
     static void PushDarkTheme()
@@ -285,11 +304,18 @@ public class VehicleEditorUIPatch
         ImGui.PushStyleColor(ImGuiCol.ScrollbarBg,   BG_DARK);
         ImGui.PushStyleColor(ImGuiCol.ScrollbarGrab, BG_MID);
         ImGui.PushStyleColor(ImGuiCol.Border,        new float4(0.25f, 0.25f, 0.30f, 1f));
+
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowRounding, 8f);
+        ImGui.PushStyleVar(ImGuiStyleVar.ChildRounding, 6f);
+        ImGui.PushStyleVar(ImGuiStyleVar.FrameRounding, 4f);
     }
 
-    static void PopDarkTheme() => ImGui.PopStyleColor(14);
+    static void PopDarkTheme()
+    {
+        ImGui.PopStyleVar(3);
+        ImGui.PopStyleColor(14);
+    }
 
-    // Barra de herramientas vertical
     static void DrawToolbar(VehicleEditor editor, Viewport viewport)
     {
         ImGuiWindowFlags flags = ImGuiWindowFlags.NoMove
@@ -298,20 +324,19 @@ public class VehicleEditorUIPatch
             | ImGuiWindowFlags.NoTitleBar
             | ImGuiWindowFlags.NoScrollbar;
 
-        float screenHeight = ImGui.GetMainViewport().Size.Y;
-        float screenWidth  = ImGui.GetMainViewport().Size.X;
-
         ImGui.SetNextWindowPos(viewport.Position + new float2(364f, 40f), ImGuiCond.Always);
-        ImGui.SetNextWindowSize(new float2(48f, 400f), ImGuiCond.Always);
+        ImGui.SetNextWindowSize(new float2(48f, 620f), ImGuiCond.Always);
 
         PushDarkTheme();
         ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new float2(4f, 4f));
         ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing,   new float2(2f, 4f));
 
         ImGui.Begin("##Toolbar", flags);
+        
+        bool hasIconFont = !_iconFont.IsNull();
 
         DrawToolButton("\uf0b2", "Translate", editor.TranslateGizmoEnabled,
-        () => editor.TranslateGizmoEnabled = !editor.TranslateGizmoEnabled);
+            () => editor.TranslateGizmoEnabled = !editor.TranslateGizmoEnabled);
 
         DrawToolButton("\uf2f1", "Rotate", editor.RotationGizmoEnabled,
             () => editor.RotationGizmoEnabled = !editor.RotationGizmoEnabled);
@@ -339,11 +364,6 @@ public class VehicleEditorUIPatch
         ImGui.Separator();
         ImGui.Dummy(new float2(0f, 4f));
 
-        // Symmetry amount
-        ImGui.Dummy(new float2(0f, 4f));
-        ImGui.Separator();
-        ImGui.Dummy(new float2(0f, 4f));
-
         ImGui.PushStyleColor(ImGuiCol.Button, BG_MID);
         ImGui.PushStyleColor(ImGuiCol.ButtonHovered, ACCENT_HOVER);
         if (ImGui.Button($"{editor.SymmetryAmount}x##sym", new float2(40f, 36f)))
@@ -355,6 +375,52 @@ public class VehicleEditorUIPatch
             editor.SymmetryIndex = editor.SymmetryIndex == 0
                 ? editor.Symmetries.Length - 1
                 : editor.SymmetryIndex - 1;
+
+        ImGui.Dummy(new float2(0f, 4f));
+        ImGui.Separator();
+        ImGui.Dummy(new float2(0f, 4f));
+
+        // Undo button
+        ImGui.PushStyleColor(ImGuiCol.Button, BG_MID);
+        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, ACCENT_HOVER);
+        if (hasIconFont) ImGui.PushFont(_iconFont, GameSettings.GetFontSize());
+        if (ImGui.Button("\uf0e2##undo", new float2(40f, 36f))) // rotate-left
+            Undo(editor);
+        if (hasIconFont) ImGui.PopFont();
+        ImGui.PopStyleColor(2);
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip("Undo (Ctrl+Z)");
+
+        // Redo button
+        ImGui.PushStyleColor(ImGuiCol.Button, BG_MID);
+        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, ACCENT_HOVER);
+        if (hasIconFont) ImGui.PushFont(_iconFont, GameSettings.GetFontSize());
+        if (ImGui.Button("\uf01e##redo", new float2(40f, 36f))) // rotate-right
+            Redo(editor);
+        if (hasIconFont) ImGui.PopFont();
+        ImGui.PopStyleColor(2);
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip("Redo (Ctrl+Y)");
+
+        ImGui.PushStyleColor(ImGuiCol.Button, BG_MID);
+        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, ACCENT_HOVER);
+        if (hasIconFont) ImGui.PushFont(_iconFont, GameSettings.GetFontSize());
+        if (ImGui.Button("\uf0c7##save", new float2(40f, 36f)))
+            _showSavePopup = true;
+        if (hasIconFont) ImGui.PopFont();
+        ImGui.PopStyleColor(2);
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip("Save Vehicle");
+
+        ImGui.PushStyleColor(ImGuiCol.Button, BG_MID);
+        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, ACCENT_HOVER);
+        if (hasIconFont) ImGui.PushFont(_iconFont, GameSettings.GetFontSize());
+        if (ImGui.Button("\uf07c##load", new float2(40f, 36f)))
+            _showLoadPanel = !_showLoadPanel;
+        if (hasIconFont) ImGui.PopFont();
+        ImGui.PopStyleColor(2);
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip("Load Vehicle");
 
         ImGui.End();          
         ImGui.PopStyleVar(2); 
@@ -397,7 +463,7 @@ public class VehicleEditorUIPatch
 
         ImGui.Begin("##BetterBuilderParts", flags);
         
-        // Delete parts
+        // Delete parts when clicking catalogue
         if (ImGui.IsWindowHovered(ImGuiHoveredFlags.ChildWindows) 
             && ImGui.IsMouseClicked(ImGuiMouseButton.Left)
             && (editor.Selected != null && editor.Selected.FakeTranslucent 
@@ -426,7 +492,7 @@ public class VehicleEditorUIPatch
         ImGui.EndChild();
         ImGui.PopStyleColor();
 
-        // Barra de búsqueda
+        // Search bar
         ImGui.PushStyleColor(ImGuiCol.ChildBg, BG_DARK);
         ImGui.BeginChild("##searchbar"u8, new float2(0f, 36f));
         ImGui.PushStyleColor(ImGuiCol.FrameBg, new float4(0.18f, 0.18f, 0.22f, 1f));
@@ -455,19 +521,16 @@ public class VehicleEditorUIPatch
             .GetField("_editorTags", BindingFlags.NonPublic | BindingFlags.Static);
         List<EditorTag> tags = tagsField?.GetValue(null) as List<EditorTag> ?? new List<EditorTag>();
 
-        // Cargamos el icon font si no está cargado
         if (_iconFont.IsNull())
             FontManager.Fonts.TryGetValue("fa-solid-900", out _iconFont);
 
-        // Usamos el icon font si está disponible
         bool hasIconFont = !_iconFont.IsNull();
-       
 
         // Sidebar
         ImGui.PushStyleColor(ImGuiCol.ChildBg, BG_DARK);
         ImGui.BeginChild("##sidebar"u8, new float2(36f, 0f));
 
-        // Botón All manual
+        // All button
         bool allSelected = _selectedTag == EditorTag.All;
         ImGui.PushStyleColor(ImGuiCol.Button,
             allSelected ? ACCENT_BLUE : new float4(0f, 0f, 0f, 0f));
@@ -503,7 +566,7 @@ public class VehicleEditorUIPatch
 
         ImGui.SameLine();
 
-        // Partes
+        // Parts area
         ImGui.PushStyleColor(ImGuiCol.ChildBg, BG_MID);
         ImGui.BeginChild("##partsArea"u8);
         DrawPartsList(editor, viewport, _selectedTag, _searchText);
@@ -573,6 +636,7 @@ public class VehicleEditorUIPatch
                         return;
                     if (ImGui.IsItemActivated())
                     {
+                        TakeSnapshot(editor);
                         if (editor.Selected != null && (editor.Selected.FakeTranslucent || StickyGrabPatch.IsStickyGrabbing || editor.Selected.Grabbed))
                         {
                             var delPart = editor.Selected;
@@ -597,8 +661,22 @@ public class VehicleEditorUIPatch
                         StickyGrabPatch.MarkSpawned();
                         editor.SpawnPart(part, in matrixAsmb2Ego, viewport);
                     }
-                    if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-                        ImGui.SetTooltip(part.DisplayName);
+                   if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                    {
+                        float totalMass = 0f;
+                        foreach (var massTemplate in part.InertMasses)
+                        {
+                            totalMass += massTemplate.GetMassPropertiesAsmb().Props.Mass;
+                        }
+                        string massStr = totalMass >= 1f 
+                            ? $"{totalMass:F2} t" 
+                            : $"{totalMass * 1000f:F0} kg";
+                        
+                        ImGui.BeginTooltip();
+                        ImGui.Text(part.DisplayName);
+                        //ImGui.Text("Mass: " + massStr);
+                        ImGui.EndTooltip();
+                    }
                 }
                 ImGui.EndTable();
             }
@@ -606,6 +684,7 @@ public class VehicleEditorUIPatch
         }
         ImGui.PopStyleVar();
     }
+
     static void DrawLaunchPanel(VehicleEditor editor, Viewport viewport)
     {
         ImGuiWindowFlags flags = ImGuiWindowFlags.NoMove
@@ -616,15 +695,8 @@ public class VehicleEditorUIPatch
         float screenHeight = ImGui.GetMainViewport().Size.Y;
         float screenWidth  = ImGui.GetMainViewport().Size.X;
         float panelWidth   = 300f;
-        // Altura dinámica basada en contenido
-        float lineHeight = ImGui.GetTextLineHeightWithSpacing();
         float padding = ImGui.GetStyle().WindowPadding.Y * 2f;
         float panelHeight = padding + 25f + 6f + (ImGui.GetFrameHeightWithSpacing() * 4f) + 10f + 40f + 10f;
-
-        ImGui.SetNextWindowPos(
-            viewport.Position + new float2(screenWidth - panelWidth - 20f, screenHeight - panelHeight - 20f),
-            ImGuiCond.Always);
-        ImGui.SetNextWindowSize(new float2(panelWidth, panelHeight), ImGuiCond.Always);
 
         ImGui.SetNextWindowPos(
             viewport.Position + new float2(screenWidth - panelWidth - 20f, screenHeight - panelHeight - 20f),
@@ -687,11 +759,9 @@ public class VehicleEditorUIPatch
                         {
                             selectedCelestial = cel;
                             celestialField?.SetValue(editor, selectedCelestial);
-                            // Actualizamos las locations para el nuevo celestial
                             typeof(VehicleEditor)
                                 .GetMethod("SetLocations", BindingFlags.NonPublic | BindingFlags.Instance)
                                 ?.Invoke(editor, null);
-                            // Actualizamos el selected location al primero disponible
                             var updatedLocations = locationsField?.GetValue(editor) as List<LocationObject>;
                             if (updatedLocations?.Count > 0)
                                 locationField?.SetValue(editor, updatedLocations[0]);
@@ -701,6 +771,7 @@ public class VehicleEditorUIPatch
                 }
             }
             ImGui.PopItemWidth();
+
             // Location
             ImGui.TableNextRow();
             ImGui.TableNextColumn();
@@ -752,7 +823,6 @@ public class VehicleEditorUIPatch
             | ImGuiWindowFlags.NoTitleBar;
 
         float screenHeight = ImGui.GetMainViewport().Size.Y;
-        float screenWidth  = ImGui.GetMainViewport().Size.X;
         float panelWidth   = 220f;
 
         const float PARTS_WIDTH   = 360f;
@@ -784,7 +854,7 @@ public class VehicleEditorUIPatch
             ImGui.PopStyleColor(2);
             return;
         }
-        ImGui.PushID("BB_Sequences");
+        ImGui.PushID("BB_Stages");
 
         ImGui.PushStyleColor(ImGuiCol.Text, HEADER_COLOR);
         ImGui.Text("STAGES"u8);
@@ -861,7 +931,7 @@ public class VehicleEditorUIPatch
                             part.Highlighted = false;
                         }
 
-                        // Right-click popup para mover a otra stage
+                        // Right-click popup to move parts between stages
                         if (ImGui.BeginPopupContextItem("##moveStage_" + part.InstanceId))
                         {
                             ImGui.Text("Move to stage:");
@@ -888,7 +958,7 @@ public class VehicleEditorUIPatch
                 }
             }
 
-            // Botón Add Stage
+            // Add Stage button
             ImGui.Dummy(new float2(0f, 4f));
             ImGui.PushStyleColor(ImGuiCol.Button,        ACCENT_BLUE);
             ImGui.PushStyleColor(ImGuiCol.ButtonHovered, ACCENT_HOVER);
@@ -940,7 +1010,7 @@ public class VehicleEditorUIPatch
             ImGui.PopStyleColor(2);
             return;
         }
-        ImGui.PushID("BB_Stages");
+        ImGui.PushID("BB_Sequences");
 
         if (editor.EditingSpace.Parts != null)
         {
@@ -1014,7 +1084,7 @@ public class VehicleEditorUIPatch
             ImGui.PushStyleColor(ImGuiCol.ButtonHovered, ACCENT_HOVER);
             
             if (hasIconFont) ImGui.PushFont(_iconFont, GameSettings.GetFontSize());
-            if (ImGui.Button("\uf055##addseq", new float2(58f, 36f))) // circle-plus
+            if (ImGui.Button("\uf055##addseq", new float2(58f, 36f)))
             {
                 Sequence newSeq = new Sequence(editor.EditingSpace.Parts, sequences.Count + 1);
                 sequences.Add(newSeq);
@@ -1029,6 +1099,137 @@ public class VehicleEditorUIPatch
         ImGui.PopStyleVar(2);
         ImGui.PopStyleColor(2);
     }
+
+    static void DrawSavePopup(VehicleEditor editor)
+    {
+        ImGui.SetNextWindowSize(new float2(300f, 120f), ImGuiCond.Appearing);
+        PushDarkTheme();
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new float2(10f, 10f));
+        
+        bool open = true;
+        ImGui.Begin("Save Vehicle##SavePopup", ref open);
+        if (!open) _showSavePopup = false;
+
+        ImGui.Text("Vehicle Name:");
+        ImGui.PushItemWidth(-1f);
+        ImInputString saveBuffer = new ImInputString(128);
+        saveBuffer.SetValue(_saveName.AsSpan());
+        ImGui.InputText("##saveName"u8, saveBuffer, ImGuiInputTextFlags.None, null, 0);
+        _saveName = saveBuffer.ToString();
+        if (ImGui.IsItemActive())
+            editor.IsUserTyping = true;
+        ImGui.PopItemWidth();
+
+        ImGui.Dummy(new float2(0f, 4f));
+
+        ImGui.PushStyleColor(ImGuiCol.Button, new float4(0.1f, 0.55f, 0.2f, 1f));
+        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, new float4(0.1f, 0.75f, 0.3f, 1f));
+        if (ImGui.Button("Save##doSave", new float2(ImGui.GetContentRegionAvail().X, 30f)))
+        {
+            if (!string.IsNullOrEmpty(_saveName) && editor.EditingSpace.Parts != null)
+            {
+                UncompressedVehicleSave.FromRootPart(editor.EditingSpace.Parts, _saveName);
+                _showSavePopup = false;
+                _saveName = "";
+            }
+        }
+        ImGui.PopStyleColor(2);
+
+        ImGui.End();
+        ImGui.PopStyleVar();
+        PopDarkTheme();
+    }
+
+    static void DrawLoadPanel(VehicleEditor editor, Viewport viewport)
+    {
+        ImGuiWindowFlags flags = ImGuiWindowFlags.NoMove
+            | ImGuiWindowFlags.NoResize
+            | ImGuiWindowFlags.NoCollapse
+            | ImGuiWindowFlags.NoTitleBar;
+
+        float screenHeight = ImGui.GetMainViewport().Size.Y;
+        float screenWidth = ImGui.GetMainViewport().Size.X;
+        float panelWidth = 350f;
+        float panelHeight = screenHeight - 100f;
+
+        ImGui.SetNextWindowPos(
+            viewport.Position + new float2((screenWidth - panelWidth) / 2f, 50f),
+            ImGuiCond.Always);
+        ImGui.SetNextWindowSize(new float2(panelWidth, panelHeight), ImGuiCond.Always);
+
+        PushDarkTheme();
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new float2(10f, 10f));
+
+        ImGui.Begin("##LoadPanel", flags);
+
+        ImGui.PushStyleColor(ImGuiCol.Text, HEADER_COLOR);
+        ImGui.Text("LOAD VEHICLE"u8);
+        ImGui.PopStyleColor();
+        ImGui.Separator();
+        ImGui.Dummy(new float2(0f, 4f));
+
+        ImGui.PushStyleColor(ImGuiCol.Button, ACCENT_BLUE);
+        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, ACCENT_HOVER);
+        if (ImGui.Button("Refresh##refreshSaves", new float2(80f, 28f)))
+            VehicleSaves.Refresh();
+        ImGui.PopStyleColor(2);
+
+        ImGui.SameLine();
+
+        ImGui.PushStyleColor(ImGuiCol.Button, new float4(0.6f, 0.15f, 0.15f, 1f));
+        ImGui.PushStyleColor(ImGuiCol.ButtonHovered, new float4(0.8f, 0.2f, 0.2f, 1f));
+        if (ImGui.Button("Close##closeLoad", new float2(80f, 28f)))
+            _showLoadPanel = false;
+        ImGui.PopStyleColor(2);
+
+        ImGui.Dummy(new float2(0f, 6f));
+        ImGui.Separator();
+        ImGui.Dummy(new float2(0f, 4f));
+
+        var saves = VehicleSaves.AsSpan();
+        for (int i = 0; i < saves.Length; i++)
+        {
+            var save = saves[i];
+            
+            float availWidth = ImGui.GetContentRegionAvail().X;
+            float deleteWidth = 36f;
+            
+            ImGui.PushStyleColor(ImGuiCol.Button, BG_MID);
+            ImGui.PushStyleColor(ImGuiCol.ButtonHovered, ACCENT_HOVER);
+            if (ImGui.Button(save.Id + "##loadsave_" + i, new float2(availWidth - deleteWidth - 4f, 32f)))
+            {
+                var partTree = save.Load(viewport);
+                if (partTree != null)
+                {
+                    editor.LoadVehicle(partTree);
+                    _showLoadPanel = false;
+                }
+            }
+            ImGui.PopStyleColor(2);
+
+            if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+                ImGui.SetTooltip($"Last modified: {save.LastUpdate}");
+
+            ImGui.SameLine();
+
+            bool hasIconFont2 = !_iconFont.IsNull();
+            ImGui.PushStyleColor(ImGuiCol.Button, new float4(0.6f, 0.15f, 0.15f, 1f));
+            ImGui.PushStyleColor(ImGuiCol.ButtonHovered, new float4(0.8f, 0.2f, 0.2f, 1f));
+            if (hasIconFont2) ImGui.PushFont(_iconFont, GameSettings.GetFontSize());
+            if (ImGui.Button("\uf1f8##deletesave_" + i, new float2(deleteWidth, 32f)))
+            {
+                save.Delete();
+                VehicleSaves.Refresh();
+            }
+            if (hasIconFont2) ImGui.PopFont();
+            ImGui.PopStyleColor(2);
+        }
+
+        ImGui.End();
+        ImGui.PopStyleVar();
+        PopDarkTheme();
+    }
+
     static string GetFirstTag(PartTemplate part)
     {
         var tagsField = typeof(VehicleEditor)
@@ -1041,6 +1242,64 @@ public class VehicleEditorUIPatch
         }
         return "Other";
     }
-    
-  
+
+    static void TakeSnapshot(VehicleEditor editor)
+    {
+        if (editor.EditingSpace.Parts == null) return;
+        uint id = 1;
+        var snapshot = editor.EditingSpace.Parts.Serialize(ref id);
+        _undoStack.Add(snapshot);
+        if (_undoStack.Count > 50)
+            _undoStack.RemoveAt(0);
+        _redoStack.Clear();
+        _snapshotPending = false;
+    }
+
+    static void Undo(VehicleEditor editor)
+    {
+        if (_undoStack.Count == 0) return;
+        
+        if (editor.EditingSpace.Parts != null)
+        {
+            uint id = 1;
+            _redoStack.Add(editor.EditingSpace.Parts.Serialize(ref id));
+        }
+        
+        var snapshot = _undoStack[_undoStack.Count - 1];
+        _undoStack.RemoveAt(_undoStack.Count - 1);
+        
+        var newParts = PartTree.Deserialize(snapshot);
+        newParts.RecomputeAllDerivedData();
+        editor.EditingSpace.Parts = newParts;
+        editor.UnattachedPartTrees.Clear();
+        editor.PartMenus.Clear();
+        editor.SubPartMenus.Clear();
+        editor.Selected = null;
+        editor.Highlighted = null;
+    }
+
+    static void Redo(VehicleEditor editor)
+    {
+        if (_redoStack.Count == 0) return;
+        
+        if (editor.EditingSpace.Parts != null)
+        {
+            uint id = 1;
+            _undoStack.Add(editor.EditingSpace.Parts.Serialize(ref id));
+        }
+        
+        var snapshot = _redoStack[_redoStack.Count - 1];
+        _redoStack.RemoveAt(_redoStack.Count - 1);
+        
+        var newParts = PartTree.Deserialize(snapshot);
+        newParts.RecomputeAllDerivedData();
+        editor.EditingSpace.Parts = newParts;
+        editor.UnattachedPartTrees.Clear();
+        editor.PartMenus.Clear();
+        editor.SubPartMenus.Clear();
+        editor.Selected = null;
+        editor.Highlighted = null;
+    }
+    public static void MarkSnapshotNeeded() => _snapshotPending = true;
+
 }
