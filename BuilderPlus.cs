@@ -5,6 +5,7 @@ using Brutal.Numerics;
 using KSA;
 using System.Reflection;
 using Brutal.GlfwApi;
+using System.Runtime.CompilerServices;
 
 namespace BuilderPlus;
 
@@ -64,11 +65,41 @@ public class HideAlertsInEditor
     }
 }
 
+/// <summary>
+/// Unrotates the craft, that was rotated in the editor for better building, 
+/// back to the correct orientation on launch, and updates the physics to match the new orientation.
+/// </summary>
 [HarmonyPatch(typeof(VehicleEditor), nameof(VehicleEditor.Dispose))]
 public class UnrotateOnLaunch
 {
-    static void Prefix(VehicleEditor __instance)
+    /// <summary> Credit @ tomservo291
+    /// Force an update to the vehicle part tree physics after rotating the root part on launch.  
+    /// If we don't do this, the parts will be visually rotated but the physics won't update.
+    /// </summary>
+    private static void UpdateVehiclePhysics(Vehicle vehicle)
     {
+        if (vehicle == null) return;
+
+        try
+        {
+            // Force PartTree to recompute static (inert) mass properties
+            // from the updated part positions.  RecomputeStaticMass is
+            // private, so we use Traverse to invoke it.
+            Traverse.Create(vehicle.Parts).Method("RecomputeStaticMass").GetValue();
+
+            // UpdateAfterPartTreeModification recomputes bounding box,
+            // mass properties (including propellant), aero, and flight
+            // computer config from the newly updated part transforms.
+            vehicle.UpdateAfterPartTreeModification();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[BuilderPlus] Error: Vehicle physics update error: {ex.Message}");
+        }
+    }
+    static void Prefix(ref VehicleEditor __instance)
+    {
+        // If the editor is closing, and we're about to launch a vehicle
         if (__instance.LaunchNewVehicle && __instance.EditingSpace.Parts != null)
         {
             var root = __instance.EditingSpace.Parts.Root;
@@ -77,7 +108,8 @@ public class UnrotateOnLaunch
             var inverseRotation = doubleQuat.CreateFromAxisAngle(new double3(0, 1, 0), -Math.PI / 2.0);
             
             root.Asmb2ParentAsmb = doubleQuat.Multiply(inverseRotation, root.Asmb2ParentAsmb);
-            
+            // Without this, the craft bounces on the ground.
+            root.BoundingBoxVehicleAsmb = root.ComputeBoundingBoxVehicleAsmb();
             var children = new PartTreeChildrenIterator(root);
             while (true)
             {
@@ -87,8 +119,15 @@ public class UnrotateOnLaunch
                 double3 relative = next.PositionParentAsmb - root.PositionParentAsmb;
                 next.PositionParentAsmb = root.PositionParentAsmb + relative.Transform(inverseRotation);
                 next.PositionParentAsmbSafe = next.PositionParentAsmb;
+                next.BoundingBoxVehicleAsmb = next.ComputeBoundingBoxVehicleAsmb();
             }
             root.Asmb2ParentAsmbSafe = root.Asmb2ParentAsmb;
+            
+            // Updates the vehicle physics to match the new part orientations on launch. Specifically the bounding box.
+            if (__instance.ExistingVehicle != null)
+                UpdateVehiclePhysics(__instance.ExistingVehicle);
+            
+            // Connor: Not sure what this does... Removing it didn't do anything obvious. Leaving it just in case.
             __instance.EditingSpace.Parts.RecomputeAllDerivedData();
         }
     }
