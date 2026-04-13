@@ -65,6 +65,10 @@ public class HideAlertsInEditor
     }
 }
 
+/// <summary>
+/// Unrotates the craft, that was rotated in the editor for better building, 
+/// back to the correct orientation on launch, and updates the physics to match the new orientation.
+/// </summary>
 [HarmonyPatch(typeof(VehicleEditor), nameof(VehicleEditor.Dispose))]
 public class UnrotateOnLaunch
 {
@@ -95,6 +99,7 @@ public class UnrotateOnLaunch
     }
     static void Prefix(ref VehicleEditor __instance)
     {
+        // If the editor is closing, and we're about to launch a vehicle
         if (__instance.LaunchNewVehicle && __instance.EditingSpace.Parts != null)
         {
             var root = __instance.EditingSpace.Parts.Root;
