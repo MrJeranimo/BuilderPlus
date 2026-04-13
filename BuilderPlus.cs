@@ -90,7 +90,7 @@ public class UnrotateOnLaunch
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"flexo: Vehicle physics update error: {ex.Message}");
+            Console.WriteLine($"[BuilderPlus] Error: Vehicle physics update error: {ex.Message}");
         }
     }
     static void Prefix(ref VehicleEditor __instance)
